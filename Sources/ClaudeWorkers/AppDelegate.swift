@@ -14,6 +14,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     let model = AppModel()
     private var server: HookServer!
     private var panel: FloatingPanel!
+    private var host: NSHostingController<PanelView>!
+    /// Height the window is currently animating to (nil when idle), and a counter so only
+    /// the latest animation's completion runs.
+    private var fitTarget: CGFloat?
+    private var fitGeneration = 0
     private var statusItem: NSStatusItem!
     private var timer: Timer?
     private var topLeft: NSPoint?
@@ -21,6 +26,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         model.hidePanel = { [weak self] in self?.panel.orderOut(nil) }
+        model.panelWindow = { [weak self] in self?.panel }
 
         server = HookServer(store: model.store, token: AppPaths.loadOrCreateToken())
         server.onJump = { [weak self] id in
@@ -58,18 +64,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func applicationWillTerminate(_ notification: Notification) { server.stop() }
 
+    /// Clicking the Dock icon (or opening the app again) brings the panel back.
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        showPanel()
+        return true
+    }
+
     // MARK: Panel
 
     private func buildPanel() {
         let host = NSHostingController(rootView: PanelView(model: model))
-        host.sizingOptions = [.preferredContentSize]
+        host.sizingOptions = []   // the window follows model.contentHeight instead
         host.view.wantsLayer = true
         host.view.layer?.backgroundColor = NSColor.clear.cgColor
+        self.host = host
+
+        // The hosting view sits in a plain container instead of being the window's content
+        // view controller, so the window no longer snaps to the SwiftUI size; fitPanel()
+        // animates it instead. The view is pinned to the container's top edge, and the
+        // container clips to the panel's rounded shape while the window resizes.
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: Theme.width, height: 200))
+        container.wantsLayer = true
+        container.layer?.cornerRadius = 20
+        container.layer?.cornerCurve = .continuous
+        container.layer?.masksToBounds = true
+        host.view.frame = container.bounds
+        host.view.autoresizingMask = [.width, .minYMargin]
+        container.addSubview(host.view)
 
         let p = FloatingPanel(contentRect: NSRect(x: 0, y: 0, width: Theme.width, height: 200),
                             styleMask: [.borderless, .nonactivatingPanel, .fullSizeContentView],
                             backing: .buffered, defer: false)
-        p.contentViewController = host
+        p.contentView = container
         p.isOpaque = false
         p.backgroundColor = .clear
         p.hasShadow = true
@@ -84,12 +110,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             topLeft = NSPointFromString(saved)
         }
 
-        // Keep the top edge pinned while the panel grows/shrinks with its content.
-        NotificationCenter.default.addObserver(forName: NSWindow.didResizeNotification, object: p, queue: .main) { [weak self] _ in
-            MainActor.assumeIsolated {
-                guard let self, let tl = self.topLeft else { return }
-                self.panel.setFrameTopLeftPoint(tl)
-            }
+        // Follow the content's measured height (and collapse/expand), animated, top edge
+        // fixed. (KVO on the hosting controller's preferredContentSize missed changes.)
+        model.onCollapseChange = { [weak self] in
+            DispatchQueue.main.async { MainActor.assumeIsolated { self?.fitPanel(animated: true) } }
         }
         NotificationCenter.default.addObserver(forName: NSWindow.didMoveNotification, object: p, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated {
@@ -99,7 +123,57 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 UserDefaults.standard.set(NSStringFromPoint(self.topLeft!), forKey: "panelTopLeft")
             }
         }
+        fitPanel(animated: false)
         showPanel()
+    }
+
+    /// Sizes the window to the panel: the header alone when collapsed, otherwise the
+    /// SwiftUI content's preferred height. The top edge stays where it is. When animated,
+    /// the hosting view is held at the larger of the two heights (pinned to the top) so the
+    /// window's bottom edge slides over the content rather than the content re-laying out.
+    private func fitPanel(animated: Bool) {
+        guard let panel, let host else { return }
+        if model.collapsed, model.headerHeight < 1 { return }   // header not measured yet
+        let want = model.collapsed ? model.headerHeight + 4 : model.contentHeight
+        guard want > 1 else { return }
+        let h = ceil(want)
+        // Already animating to this height: let that animation finish undisturbed.
+        if let t = fitTarget, abs(t - h) < 0.5 { return }
+        let cur = panel.frame
+        if fitTarget == nil, abs(cur.height - h) < 0.5 {
+            if model.collapsed { model.showContent = false }
+            return
+        }
+        let target = NSRect(x: cur.minX, y: cur.maxY - h, width: Theme.width, height: h)
+        fitGeneration += 1
+        let generation = fitGeneration
+        guard animated, panel.isVisible else {
+            fitTarget = nil
+            panel.setFrame(target, display: true)
+            host.view.frame = panel.contentView?.bounds ?? .zero
+            if model.collapsed { model.showContent = false }
+            return
+        }
+        fitTarget = h
+        let hostH = max(h, cur.height)
+        host.view.frame = NSRect(x: 0, y: cur.height - hostH, width: Theme.width, height: hostH)
+        NSAnimationContext.runAnimationGroup({ ctx in
+            ctx.duration = 0.22
+            ctx.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            panel.animator().setFrame(target, display: true)
+        }, completionHandler: { [weak self] in
+            MainActor.assumeIsolated {
+                // A newer animation replaced this one: its own completion does the cleanup.
+                // (Running this early snapped the content view back to the old height
+                // mid-expand, so the panel looked like it jumped at the end.)
+                guard let self, generation == self.fitGeneration, let panel = self.panel else { return }
+                self.fitTarget = nil
+                self.host?.view.frame = panel.contentView?.bounds ?? .zero
+                if self.model.collapsed { self.model.showContent = false }
+                panel.invalidateShadow()
+                self.fitPanel(animated: true)   // catch any size change that came in meanwhile
+            }
+        })
     }
 
     func showPanel() {
@@ -191,10 +265,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let store = model.store
         let n = store.visibleSessions.count
         let attention = store.attentionCount
-        let name = attention > 0 ? "exclamationmark.bubble.fill" : (store.workingCount > 0 ? "person.3.sequence.fill" : "person.3.sequence")
-        let img = NSImage(systemSymbolName: name, accessibilityDescription: AppInfo.name)
-        img?.isTemplate = true
-        statusItem.button?.image = img
+        let state: MenuBarIcon.State = attention > 0 ? .attention : (store.workingCount > 0 ? .working : .idle)
+        statusItem.button?.image = MenuBarIcon.image(state)
         statusItem.button?.title = n > 0 ? " \(attention > 0 ? "\(attention)/" : "")\(n)" : ""
     }
 
