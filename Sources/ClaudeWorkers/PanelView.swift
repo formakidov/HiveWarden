@@ -1,8 +1,20 @@
 import SwiftUI
 import ClaudeWorkersCore
 
+private struct PanelHeightKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
+}
+
+private struct HeaderHeightKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
+}
+
 struct PanelView: View {
     @Bindable var model: AppModel
+    @State private var dragStart: (mouse: NSPoint, origin: NSPoint)?
+    @State private var dragMoved = false
 
     private var store: SessionStore { model.store }
     private var selected: AgentSession? {
@@ -12,7 +24,7 @@ struct PanelView: View {
     var body: some View {
         VStack(spacing: 0) {
             header
-            if !model.collapsed {
+            if model.showContent {
                 Group {
                     if let s = selected {
                         DetailView(model: model, session: s)
@@ -29,10 +41,23 @@ struct PanelView: View {
                         }
                     }
                 }
-                .transition(.opacity)
+            } else {
+                Color.clear.frame(height: 4)   // collapsed: balance the header's bottom padding
             }
         }
+        .onPreferenceChange(HeaderHeightKey.self) { model.headerHeight = $0 }
         .frame(width: Theme.width)
+        .animation(.snappy(duration: 0.22), value: model.selectedID)
+        .animation(.snappy(duration: 0.22), value: store.visibleSessions.map(\.id))
+        .fixedSize(horizontal: false, vertical: true)
+        // The window follows this measured height (AppDelegate.fitPanel).
+        .background(GeometryReader { g in Color.clear.preference(key: PanelHeightKey.self, value: g.size.height) })
+        .onPreferenceChange(PanelHeightKey.self) { model.contentHeight = $0 }
+        // Collapse/expand is animated by the window itself, top edge fixed. The panel fills
+        // the window with its content pinned to the top, so the moving bottom edge reveals
+        // or covers the content. minHeight 0 makes this frame take the window's height even
+        // when the content is taller; otherwise the whole view gets centred and jumps.
+        .frame(minHeight: 0, maxHeight: .infinity, alignment: .top)
         .background(
             RoundedRectangle(cornerRadius: 20, style: .continuous)
                 .fill(Theme.panel.opacity(0.97))
@@ -40,10 +65,6 @@ struct PanelView: View {
         )
         .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
         .preferredColorScheme(.dark)
-        .animation(.snappy(duration: 0.22), value: model.collapsed)
-        .animation(.snappy(duration: 0.22), value: model.selectedID)
-        .animation(.snappy(duration: 0.22), value: store.visibleSessions.map(\.id))
-        .fixedSize(horizontal: false, vertical: true)
     }
 
     // MARK: Header
@@ -88,7 +109,34 @@ struct PanelView: View {
                        help: model.collapsed ? "Expand" : "Collapse", size: 12) { model.collapsed.toggle() }
             IconButton(system: "xmark", help: "Hide (menu bar icon brings it back)", size: 12) { model.hidePanel() }
         }
-        .padding(.horizontal, 14).padding(.top, 12).padding(.bottom, model.collapsed ? 12 : 8)
+        .padding(.horizontal, 14).padding(.top, 12).padding(.bottom, 8)
+        .background(GeometryReader { g in Color.clear.preference(key: HeaderHeightKey.self, value: g.size.height) })
+        .contentShape(Rectangle())
+        .gesture(headerDrag)
+        .help(model.collapsed ? "Click to expand, drag to move" : "Click to collapse, drag to move")
+    }
+
+    /// Click (no movement) on the header's empty space toggles collapse; dragging moves
+    /// the panel. Done by hand because a tap gesture here would stop the window's own
+    /// drag-by-background. Uses screen coordinates so moving the window doesn't feed
+    /// back into the gesture. The buttons in the header keep their own clicks.
+    private var headerDrag: some Gesture {
+        DragGesture(minimumDistance: 0, coordinateSpace: .global)
+            .onChanged { _ in
+                guard let w = model.panelWindow() else { return }
+                let mouse = NSEvent.mouseLocation
+                if dragStart == nil { dragStart = (mouse, w.frame.origin) }
+                guard let start = dragStart else { return }
+                let dx = mouse.x - start.mouse.x, dy = mouse.y - start.mouse.y
+                if !dragMoved, hypot(dx, dy) < 3 { return }   // still a click
+                dragMoved = true
+                w.setFrameOrigin(NSPoint(x: start.origin.x + dx, y: start.origin.y + dy))
+            }
+            .onEnded { _ in
+                if !dragMoved { model.collapsed.toggle() }
+                dragStart = nil
+                dragMoved = false
+            }
     }
 }
 

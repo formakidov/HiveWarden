@@ -45,8 +45,8 @@ Then:
 2. Start a new `claude` session, or send a prompt in one that is already open. It
    shows up in the panel.
 
-To keep it around, drag `build/HiveWarden.app` into `/Applications`, and turn on
-**Launch at login** from the menu-bar icon.
+To keep it around, drag `build/HiveWarden.app` into `/Applications` (it then shows up in
+Launchpad and Spotlight), and turn on **Launch at login** from the menu-bar icon.
 
 Prefer the command line? `build/HiveWarden.app/Contents/MacOS/HiveWarden --install-hooks`
 does the same as the button.
@@ -63,7 +63,7 @@ does the same as the button.
 | Rename an agent | Right-click its row → **Rename…** |
 | Hide the panel | The ✕ in the header. The menu-bar icon brings it back; it also reappears when an agent needs you. |
 
-HiveWarden has no Dock icon. Its menu-bar icon holds the settings: alert sound, plan
+HiveWarden has a Dock icon (click it to bring the panel back) and a menu-bar icon that holds the settings: alert sound, plan
 reporting, hooks, launch at login, the event log, and Quit.
 
 The first time you use ↗ with Terminal or iTerm, macOS asks whether HiveWarden may

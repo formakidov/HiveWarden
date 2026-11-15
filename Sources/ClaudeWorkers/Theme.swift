@@ -31,19 +31,31 @@ private struct HeightKey: PreferenceKey {
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
 }
 
+/// Shows the content at its natural height, and only becomes a scroll view once the
+/// content is taller than `maxHeight`. (Always scrolling meant starting from a guessed
+/// height every time the view appeared; content taller than the guess was centred in it
+/// for a frame, which made rows jump on expand.)
 struct FittingScroll<Content: View>: View {
     var maxHeight: CGFloat
     @ViewBuilder var content: Content
-    @State private var h: CGFloat = 80
+    @State private var h: CGFloat = 0
 
     var body: some View {
-        ScrollView(.vertical, showsIndicators: false) {
-            content.background(GeometryReader { g in
-                Color.clear.preference(key: HeightKey.self, value: g.size.height)
-            })
+        Group {
+            if h <= maxHeight {
+                measured.frame(maxHeight: maxHeight, alignment: .top).clipped()
+            } else {
+                ScrollView(.vertical, showsIndicators: false) { measured }
+                    .frame(height: maxHeight)
+            }
         }
         .onPreferenceChange(HeightKey.self) { h = $0 }
-        .frame(height: min(max(h, 1), maxHeight))
+    }
+
+    private var measured: some View {
+        content.background(GeometryReader { g in
+            Color.clear.preference(key: HeightKey.self, value: g.size.height)
+        })
     }
 }
 

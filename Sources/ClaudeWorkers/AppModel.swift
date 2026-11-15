@@ -6,7 +6,24 @@ import ClaudeWorkersCore
 @MainActor @Observable
 final class AppModel {
     let store = SessionStore()
-    var collapsed = false
+    /// What the user asked for. The window animates to match (see AppDelegate.fitPanel).
+    var collapsed = false {
+        didSet {
+            if !collapsed { showContent = true }
+            onCollapseChange()
+        }
+    }
+    /// Whether the panel body is rendered. On collapse it stays until the window has
+    /// finished shrinking, so the window edge slides over it instead of it vanishing.
+    var showContent = true
+    /// Measured height of the header row (used as the collapsed window height).
+    var headerHeight: CGFloat = 0
+    /// Measured natural height of the whole panel; the window animates to it.
+    var contentHeight: CGFloat = 0 {
+        didSet { if contentHeight != oldValue { onCollapseChange() } }
+    }
+    /// Called when the window should re-fit (collapse toggled or content height changed).
+    @ObservationIgnored var onCollapseChange: () -> Void = {}
     var selectedID: String?
     /// Sessions whose "Next" list is expanded in the list view.
     var expandedNext: Set<String> = []
@@ -26,6 +43,8 @@ final class AppModel {
     }
 
     @ObservationIgnored var hidePanel: () -> Void = {}
+    /// The panel's window, so the header can drag it (set by AppDelegate).
+    @ObservationIgnored var panelWindow: () -> NSWindow? = { nil }
 
     init() {
         store.onAttention = { [weak self] _ in self?.attentionSound() }
