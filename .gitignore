@@ -1,0 +1,16 @@
+# Build output
+.build/
+build/
+
+# Xcode / SwiftPM
+*.xcodeproj
+*.xcworkspace
+xcuserdata/
+.swiftpm/
+DerivedData/
+
+# macOS
+.DS_Store
+
+# Local agent/editor state
+.claude/
